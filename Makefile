@@ -2,6 +2,8 @@ PROJECT_NAME := "bots-backend-1"
 SERVICE_NAME := "yoshimi-api"
 GCP_PROJECT := ${GCP_PROJECT}
 
+.PHONY: build
+
 deps:
 	brew install buildpacks/tap/pack
 
@@ -17,8 +19,8 @@ image:
 	docker build -t us-docker.pkg.dev/bots-backend-1/hirebot-api/api .
 
 build:
-	cd ./app && go build
-	go build ./...
+	cd ./app && go build -o ./build/
+	go build -o ./build/
 
 deploy: build
 	SERVICE_NAME=$(SERVICE_NAME) GCP_PROJECT=$(GCP_PROJECT) pulumi up --verbose=2
