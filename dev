@@ -1,0 +1,8 @@
+strict digraph {
+    Resource0 [label="urn:pulumi:dev::bots-backend-1::pulumi:pulumi:Stack::bots-backend-1-dev"];
+    Resource1 [label="urn:pulumi:dev::bots-backend-1::pulumi:providers:google-native::default"];
+    Resource2 [label="urn:pulumi:dev::bots-backend-1::google-native:artifactregistry/v1:Repository::hirebot-api"];
+    Resource2 -> Resource0 [color = "#AA6639"];
+    Resource3 [label="urn:pulumi:dev::bots-backend-1::google-native:run/v2:Service::hirebot-api"];
+    Resource3 -> Resource0 [color = "#AA6639"];
+}
