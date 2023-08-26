@@ -1,6 +1,6 @@
-PROJECT_NAME := "bots-backend-1"
+GCP_PROJECT := "bots-backend-1"
 SERVICE_NAME := "yoshimi-api"
-GCP_PROJECT := ${GCP_PROJECT}
+NETWORK_NAME := "bots-backend-1"
 
 .PHONY: build
 
@@ -8,12 +8,13 @@ deps:
 	brew install buildpacks/tap/pack
 
 bootstrap:
-	# gcloud projects create $(PROJECT_NAME)
-	gcloud config set project $(PROJECT_NAME)
-	gcloud services enable compute.googleapis.com --project $(PROJECT_NAME)
-	gcloud services enable artifactregistry.googleapis.com --project $(PROJECT_NAME)
-	gcloud services enable cloudbuild.googleapis.com  --project $(PROJECT_NAME)
-	gcloud services enable run.googleapis.com --project $(PROJECT_NAME)
+	# gcloud projects create $(GCP_PROJECT)
+	gcloud config set project $(GCP_PROJECT)
+	gcloud services enable compute.googleapis.com --project $(GCP_PROJECT)
+	gcloud services enable artifactregistry.googleapis.com --project $(GCP_PROJECT)
+	gcloud services enable cloudbuild.googleapis.com  --project $(GCP_PROJECT)
+	gcloud services enable run.googleapis.com --project $(GCP_PROJECT)
+	# for optional features
 
 image:
 	docker build -t us-docker.pkg.dev/bots-backend-1/hirebot-api/api .
