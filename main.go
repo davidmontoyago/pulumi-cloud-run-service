@@ -22,19 +22,19 @@ import (
 const GCP_DOCKER_REGISTRY = "us-docker.pkg.dev"
 
 type EnvConfig struct {
-	ServiceName string `envconfig:"SERVICE_NAME" required:"true"`
-	Project     string `envconfig:"GCP_PROJECT" required:"true"`
-	Region      string `envconfig:"GCP_REGION" default:"us-central1"`
-	Network     string `envconfig:"GCP_NETWORK" required:"true"`
-	Debug       bool   `envconfig:"DEBUG"`
+	ServiceName                string `envconfig:"SERVICE_NAME" required:"true"`
+	Project                    string `envconfig:"GCP_PROJECT" required:"true"`
+	Region                     string `envconfig:"GCP_REGION" default:"us-central1"`
+	Network                    string `envconfig:"GCP_NETWORK" required:"true"`
+	Debug                      bool   `envconfig:"DEBUG"`
+	EnableExternalLoadBalancer bool   `envconfig:"GCP_EXTERNAL_LOAD_BALANCER_ENABLE"`
+	EnableHTTPForward          bool   `envconfig:"GCP_EXTERNAL_LOAD_BALANCER_HTTP_FORWARD_ENABLE" default:"true"`
+	EnableTLS                  bool   `envconfig:"GCP_EXTERNAL_LOAD_BALANCER_TLS_ENABLE" default:"false"`
 }
 
 func main() {
 	var envVars EnvConfig
-	err := envconfig.Process("", &envVars)
-	if err != nil {
-		log.Fatal().Err(err)
-	}
+	envconfig.MustProcess("", &envVars)
 
 	projectID := envVars.Project
 
@@ -60,12 +60,15 @@ func main() {
 			return err
 		}
 
-		// add an optional GCLB to support Cloud CDN, Armor and IAP
-		// See:
-		// https://github.com/ahmetb/cloud-run-faq/blob/master/README.md#how-does-cloud-runs-load-balancing-compare-with-cloud-load-balancer-gclb
-		err = createExternalLoadBalancer(ctx, serviceName, envVars.Network, projectID, envVars.Region)
-		if err != nil {
-			return err
+		if envVars.EnableExternalLoadBalancer {
+			// add an optional GCLB to support Cloud CDN, Armor and IAP
+			// See:
+			// https://github.com/ahmetb/cloud-run-faq/blob/master/README.md#how-does-cloud-runs-load-balancing-compare-with-cloud-load-balancer-gclb
+			err = createExternalLoadBalancer(ctx, serviceName, envVars.Network, projectID,
+				envVars.Region, envVars.EnableHTTPForward, envVars.EnableTLS)
+			if err != nil {
+				return err
+			}
 		}
 
 		return nil
@@ -78,7 +81,8 @@ func main() {
 // - HTTPS by default with GCP managed certificate, HTTP if enabled
 // - IAP if enabled
 // - IP blocklisting if enabled
-func createExternalLoadBalancer(ctx *pulumi.Context, serviceName, network, projectID, region string) error {
+func createExternalLoadBalancer(ctx *pulumi.Context, serviceName, network, projectID,
+	region string, httpForward, tls bool) error {
 	// TODO bootstrap VPC
 
 	// TODO create Subnet for lb
@@ -112,70 +116,75 @@ func createExternalLoadBalancer(ctx *pulumi.Context, serviceName, network, proje
 	// TODO setup UrlMAP for HTTPS redirect
 	// https://github.com/terraform-google-modules/terraform-google-lb-http/blob/2a11956a2ed58fd60f1dde5a8277b8aeef70e6db/main.tf#L171
 
-	// HTTPS
-	certificate, err := computeclassic.NewManagedSslCertificate(ctx, fmt.Sprintf("%s-tls", serviceName), &computeclassic.ManagedSslCertificateArgs{
-		Description: pulumi.String(fmt.Sprintf("TLS cert for %s", serviceName)),
-		Managed: &computeclassic.ManagedSslCertificateManagedArgs{
-			Domains: pulumi.StringArray{
-				pulumi.String("pathtoprod.dev"),
+	if tls {
+		certificate, err := computeclassic.NewManagedSslCertificate(ctx, fmt.Sprintf("%s-tls", serviceName), &computeclassic.ManagedSslCertificateArgs{
+			Description: pulumi.String(fmt.Sprintf("TLS cert for %s", serviceName)),
+			Managed: &computeclassic.ManagedSslCertificateManagedArgs{
+				Domains: pulumi.StringArray{
+					pulumi.String("pathtoprod.dev"),
+				},
 			},
-		},
-		Project: pulumi.String(projectID),
-	})
-	if err != nil {
-		return err
+			Project: pulumi.String(projectID),
+		})
+		if err != nil {
+			return err
+		}
+
+		httpsProxy, err := compute.NewTargetHttpsProxy(ctx, fmt.Sprintf("%s-https", serviceName), &compute.TargetHttpsProxyArgs{
+			Description: pulumi.String(fmt.Sprintf("proxy to LB traffic for %s", serviceName)),
+			Project:     pulumi.String(projectID),
+			UrlMap:      urlMap.SelfLink,
+			SslCertificates: pulumi.StringArray{
+				certificate.SelfLink,
+			},
+		})
+		if err != nil {
+			return err
+		}
+
+		_, err = compute.NewForwardingRule(ctx, fmt.Sprintf("%s-https", serviceName), &compute.ForwardingRuleArgs{
+			Description: pulumi.String(fmt.Sprintf("HTTPS forwarding rule to LB traffic for %s", serviceName)),
+			Project:     pulumi.String(projectID),
+			Network:     pulumi.String(network),
+			Region:      pulumi.String(region),
+			PortRange:   pulumi.String("443"),
+			// TODO make configurable
+			LoadBalancingScheme: compute.ForwardingRuleLoadBalancingSchemeExternal,
+			Target:              httpsProxy.SelfLink,
+			BackendService:      service.SelfLink,
+		})
+		if err != nil {
+			return err
+		}
 	}
 
-	httpsProxy, err := compute.NewTargetHttpsProxy(ctx, fmt.Sprintf("%s-https", serviceName), &compute.TargetHttpsProxyArgs{
-		Description: pulumi.String(fmt.Sprintf("proxy to LB traffic for %s", serviceName)),
-		Project:     pulumi.String(projectID),
-		UrlMap:      urlMap.SelfLink,
-		SslCertificates: pulumi.StringArray{
-			certificate.SelfLink,
-		},
-	})
-	if err != nil {
-		return err
+	if httpForward {
+		httpProxy, err := compute.NewTargetHttpProxy(ctx, fmt.Sprintf("%s-http", serviceName), &compute.TargetHttpProxyArgs{
+			Description: pulumi.String(fmt.Sprintf("proxy to LB traffic for %s", serviceName)),
+			Project:     pulumi.String(projectID),
+			UrlMap:      urlMap.SelfLink,
+		})
+		if err != nil {
+			return err
+		}
+
+		_, err = compute.NewForwardingRule(ctx, fmt.Sprintf("%s-http", serviceName), &compute.ForwardingRuleArgs{
+			Description: pulumi.String(fmt.Sprintf("HTTP forwarding rule to LB traffic for %s", serviceName)),
+			Project:     pulumi.String(projectID),
+			Network:     pulumi.String(network),
+			Region:      pulumi.String(region),
+			PortRange:   pulumi.String("80"),
+			// TODO make configurable
+			LoadBalancingScheme: compute.ForwardingRuleLoadBalancingSchemeExternal,
+			Target:              httpProxy.SelfLink,
+			BackendService:      service.SelfLink,
+		})
+		if err != nil {
+			return err
+		}
 	}
 
-	_, err = compute.NewForwardingRule(ctx, fmt.Sprintf("%s-https", serviceName), &compute.ForwardingRuleArgs{
-		Description: pulumi.String(fmt.Sprintf("HTTPS forwarding rule to LB traffic for %s", serviceName)),
-		Project:     pulumi.String(projectID),
-		Network:     pulumi.String(network),
-		Region:      pulumi.String(region),
-		PortRange:   pulumi.String("443"),
-		// TODO make configurable
-		LoadBalancingScheme: compute.ForwardingRuleLoadBalancingSchemeExternal,
-		Target:              httpsProxy.SelfLink,
-		BackendService:      service.SelfLink,
-	})
-	if err != nil {
-		return err
-	}
-
-	// HTTP
-	httpProxy, err := compute.NewTargetHttpProxy(ctx, fmt.Sprintf("%s-http", serviceName), &compute.TargetHttpProxyArgs{
-		Description: pulumi.String(fmt.Sprintf("proxy to LB traffic for %s", serviceName)),
-		Project:     pulumi.String(projectID),
-		UrlMap:      urlMap.SelfLink,
-	})
-	if err != nil {
-		return err
-	}
-
-	_, err = compute.NewForwardingRule(ctx, fmt.Sprintf("%s-http", serviceName), &compute.ForwardingRuleArgs{
-		Description: pulumi.String(fmt.Sprintf("HTTP forwarding rule to LB traffic for %s", serviceName)),
-		Project:     pulumi.String(projectID),
-		Network:     pulumi.String(network),
-		Region:      pulumi.String(region),
-		PortRange:   pulumi.String("80"),
-		// TODO make configurable
-		LoadBalancingScheme: compute.ForwardingRuleLoadBalancingSchemeExternal,
-		Target:              httpProxy.SelfLink,
-		BackendService:      service.SelfLink,
-	})
-
-	return err
+	return nil
 }
 
 func createCloudRunDeployment(ctx *pulumi.Context, image string, serviceName string, projectID string, region string) error {

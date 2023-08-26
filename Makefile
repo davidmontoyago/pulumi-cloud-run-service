@@ -1,6 +1,6 @@
 GCP_PROJECT := "bots-backend-1"
 SERVICE_NAME := "yoshimi-api"
-NETWORK_NAME := "bots-backend-1"
+GCP_NETWORK := "bots-backend-1"
 
 .PHONY: build
 
@@ -24,4 +24,8 @@ build:
 	go build -o ./build/
 
 deploy: build
-	SERVICE_NAME=$(SERVICE_NAME) GCP_PROJECT=$(GCP_PROJECT) pulumi up --verbose=2
+	SERVICE_NAME=$(SERVICE_NAME) \
+	GCP_PROJECT=$(GCP_PROJECT) \
+	GCP_NETWORK=$(GCP_NETWORK) \
+	GCP_EXTERNAL_LOAD_BALANCER_ENABLE=$(GCP_EXTERNAL_LOAD_BALANCER_ENABLE) \
+	pulumi up --verbose=2
