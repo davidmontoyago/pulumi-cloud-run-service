@@ -88,15 +88,29 @@ func createExternalLoadBalancer(ctx *pulumi.Context, serviceName, network, proje
 	// TODO create Subnet for lb
 	// TODO create Subnet for proxy-only
 
+	neg, err := compute.NewNetworkEndpointGroup(ctx, fmt.Sprintf("%s-default", serviceName), &compute.NetworkEndpointGroupArgs{
+		Description:         pulumi.String(fmt.Sprintf("NEG to LB traffic for %s", serviceName)),
+		Project:             pulumi.String(projectID),
+		NetworkEndpointType: compute.NetworkEndpointGroupNetworkEndpointTypeServerless,
+		CloudRun: &compute.NetworkEndpointGroupCloudRunArgs{
+			Service: pulumi.String(serviceName),
+		},
+	})
+	if err != nil {
+		return err
+	}
+
 	service, err := compute.NewBackendService(ctx, fmt.Sprintf("%s-default", serviceName), &compute.BackendServiceArgs{
-		Description: pulumi.String(fmt.Sprintf("service backend for %s", serviceName)),
-		Project:     pulumi.String(projectID),
-		PortName:    pulumi.String("https"),
-		Protocol:    compute.BackendServiceProtocolHttps,
+		Description:         pulumi.String(fmt.Sprintf("service backend for %s", serviceName)),
+		Project:             pulumi.String(projectID),
+		PortName:            pulumi.String("https"),
+		Protocol:            compute.BackendServiceProtocolHttps,
+		LoadBalancingScheme: compute.BackendServiceLoadBalancingSchemeExternal,
 		// TODO setup heathlcheck
 		Backends: compute.BackendArray{
-			// TODO point to NEG
-			&compute.BackendArgs{},
+			&compute.BackendArgs{
+				Group: neg.SelfLink,
+			},
 		},
 		// TODO allow enabling IAP (Identity Aware Proxy)
 	})
@@ -119,12 +133,12 @@ func createExternalLoadBalancer(ctx *pulumi.Context, serviceName, network, proje
 	if tls {
 		certificate, err := computeclassic.NewManagedSslCertificate(ctx, fmt.Sprintf("%s-tls", serviceName), &computeclassic.ManagedSslCertificateArgs{
 			Description: pulumi.String(fmt.Sprintf("TLS cert for %s", serviceName)),
+			Project:     pulumi.String(projectID),
 			Managed: &computeclassic.ManagedSslCertificateManagedArgs{
 				Domains: pulumi.StringArray{
 					pulumi.String("pathtoprod.dev"),
 				},
 			},
-			Project: pulumi.String(projectID),
 		})
 		if err != nil {
 			return err
