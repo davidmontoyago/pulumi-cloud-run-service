@@ -10,10 +10,10 @@ import (
 	// "github.com/pulumi/pulumi-gcp/sdk/v6/go/gcp/cloudrunv2"
 
 	computeclassic "github.com/pulumi/pulumi-gcp/sdk/v5/go/gcp/compute"
-	"github.com/pulumi/pulumi-gcp/sdk/v6/go/gcp/cloudrunv2"
 	artifactregistry "github.com/pulumi/pulumi-google-native/sdk/go/google/artifactregistry/v1"
 	cloudbuild "github.com/pulumi/pulumi-google-native/sdk/go/google/cloudbuild/v1"
 	compute "github.com/pulumi/pulumi-google-native/sdk/go/google/compute/v1"
+	cloudrunv1 "github.com/pulumi/pulumi-google-native/sdk/go/google/run/v1"
 	cloudrun "github.com/pulumi/pulumi-google-native/sdk/go/google/run/v2"
 
 	"github.com/pulumi/pulumi/sdk/v3/go/pulumi"
@@ -88,11 +88,8 @@ func main() {
 // https://cloud.google.com/load-balancing/docs/https/setting-up-reg-ext-https-serverless
 func createExternalLoadBalancer(ctx *pulumi.Context, serviceName, network, projectID,
 	region string, httpForward, tls bool) error {
-	// TODO bootstrap VPC
 
-	// TODO create Subnet for lb
-
-	// TODO create Subnet for proxy-only
+	// proxy-only subnet required by Cloud Run to get traffic from the LB
 	_, err := compute.NewSubnetwork(ctx, fmt.Sprintf("%s-proxy-only", serviceName), &compute.SubnetworkArgs{
 		Description: pulumi.String(fmt.Sprintf("proxy-only subnet for cloud run traffic for %s", serviceName)),
 		Project:     pulumi.String(projectID),
@@ -250,18 +247,28 @@ func createCloudRunDeployment(ctx *pulumi.Context, image string, serviceName str
 		return err
 	}
 
-	// TODO only if external LB enabled
-	_, err = cloudrunv2.NewServiceIamBinding(ctx, serviceName, &cloudrunv2.ServiceIamBindingArgs{
-		Project:  pulumi.String(projectID),
-		Location: pulumi.String(region),
-		Role:     pulumi.String("roles/run.invoker"),
-		Members: pulumi.StringArray{
-			pulumi.String("allUsers"),
-		},
-	})
+	// TODO enable only if external LB enabled
+	if 1 == 0 {
+		_, err = cloudrunv1.NewServiceIamPolicy(ctx, serviceName, &cloudrunv1.ServiceIamPolicyArgs{
+			Location:  pulumi.String(region),
+			Project:   pulumi.String(projectID),
+			ServiceId: pulumi.String(serviceName),
+			Bindings: &cloudrunv1.BindingArray{
+				cloudrunv1.BindingArgs{
+					Role: pulumi.String("roles/run.invoker"),
+					Members: pulumi.StringArray{
+						pulumi.String("allUsers"),
+					},
+				},
+			},
+		})
+		if err != nil {
+			return err
+		}
+	}
 
 	// ctx.Export("ip", deployment.IpAddress)
-	return err
+	return nil
 }
 
 func createCloudBuild(ctx *pulumi.Context, image string, serviceName string, projectID string, region string) error {
