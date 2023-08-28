@@ -10,6 +10,7 @@ import (
 	// "github.com/pulumi/pulumi-gcp/sdk/v6/go/gcp/cloudrunv2"
 
 	computeclassic "github.com/pulumi/pulumi-gcp/sdk/v5/go/gcp/compute"
+	"github.com/pulumi/pulumi-gcp/sdk/v6/go/gcp/cloudrunv2"
 	artifactregistry "github.com/pulumi/pulumi-google-native/sdk/go/google/artifactregistry/v1"
 	cloudbuild "github.com/pulumi/pulumi-google-native/sdk/go/google/cloudbuild/v1"
 	compute "github.com/pulumi/pulumi-google-native/sdk/go/google/compute/v1"
@@ -64,7 +65,8 @@ func main() {
 			// add an optional GCLB to support Cloud CDN, Armor and IAP
 			// See:
 			// https://github.com/ahmetb/cloud-run-faq/blob/master/README.md#how-does-cloud-runs-load-balancing-compare-with-cloud-load-balancer-gclb
-			err = createExternalLoadBalancer(ctx, serviceName, envVars.Network, projectID,
+			network := fmt.Sprintf("projects/%s/global/networks/%s", projectID, envVars.Network)
+			err = createExternalLoadBalancer(ctx, serviceName, network, projectID,
 				envVars.Region, envVars.EnableHTTPForward, envVars.EnableTLS)
 			if err != nil {
 				return err
@@ -81,17 +83,35 @@ func main() {
 // - HTTPS by default with GCP managed certificate, HTTP if enabled
 // - IAP if enabled
 // - IP blocklisting if enabled
+//
+// See:
+// https://cloud.google.com/load-balancing/docs/https/setting-up-reg-ext-https-serverless
 func createExternalLoadBalancer(ctx *pulumi.Context, serviceName, network, projectID,
 	region string, httpForward, tls bool) error {
 	// TODO bootstrap VPC
 
 	// TODO create Subnet for lb
-	// TODO create Subnet for proxy-only
 
-	neg, err := compute.NewNetworkEndpointGroup(ctx, fmt.Sprintf("%s-default", serviceName), &compute.NetworkEndpointGroupArgs{
+	// TODO create Subnet for proxy-only
+	_, err := compute.NewSubnetwork(ctx, fmt.Sprintf("%s-proxy-only", serviceName), &compute.SubnetworkArgs{
+		Description: pulumi.String(fmt.Sprintf("proxy-only subnet for cloud run traffic for %s", serviceName)),
+		Project:     pulumi.String(projectID),
+		Region:      pulumi.String(region),
+		Purpose:     compute.SubnetworkPurposeRegionalManagedProxy,
+		Network:     pulumi.String(network),
+		// Extended subnetworks in auto subnet mode networks cannot overlap with 10.128.0.0/9
+		IpCidrRange: pulumi.String("10.127.0.0/24"),
+		Role:        compute.SubnetworkRoleActive,
+	})
+	if err != nil {
+		return err
+	}
+
+	neg, err := compute.NewRegionNetworkEndpointGroup(ctx, fmt.Sprintf("%s-default", serviceName), &compute.RegionNetworkEndpointGroupArgs{
 		Description:         pulumi.String(fmt.Sprintf("NEG to LB traffic for %s", serviceName)),
 		Project:             pulumi.String(projectID),
-		NetworkEndpointType: compute.NetworkEndpointGroupNetworkEndpointTypeServerless,
+		Region:              pulumi.String(region),
+		NetworkEndpointType: compute.RegionNetworkEndpointGroupNetworkEndpointTypeServerless,
 		CloudRun: &compute.NetworkEndpointGroupCloudRunArgs{
 			Service: pulumi.String(serviceName),
 		},
@@ -100,12 +120,13 @@ func createExternalLoadBalancer(ctx *pulumi.Context, serviceName, network, proje
 		return err
 	}
 
-	service, err := compute.NewBackendService(ctx, fmt.Sprintf("%s-default", serviceName), &compute.BackendServiceArgs{
-		Description:         pulumi.String(fmt.Sprintf("service backend for %s", serviceName)),
-		Project:             pulumi.String(projectID),
-		PortName:            pulumi.String("https"),
-		Protocol:            compute.BackendServiceProtocolHttps,
-		LoadBalancingScheme: compute.BackendServiceLoadBalancingSchemeExternal,
+	service, err := compute.NewRegionBackendService(ctx, fmt.Sprintf("%s-default", serviceName), &compute.RegionBackendServiceArgs{
+		Description: pulumi.String(fmt.Sprintf("service backend for %s", serviceName)),
+		Project:     pulumi.String(projectID),
+		// TODO change to https
+		Protocol:            compute.RegionBackendServiceProtocolHttp,
+		LoadBalancingScheme: compute.RegionBackendServiceLoadBalancingSchemeExternalManaged,
+		Region:              pulumi.String(region),
 		// TODO setup heathlcheck
 		Backends: compute.BackendArray{
 			&compute.BackendArgs{
@@ -118,9 +139,12 @@ func createExternalLoadBalancer(ctx *pulumi.Context, serviceName, network, proje
 		return err
 	}
 
-	urlMap, err := compute.NewUrlMap(ctx, fmt.Sprintf("%s-default", serviceName), &compute.UrlMapArgs{
-		Description:    pulumi.String(fmt.Sprintf("URL map to LB traffic for %s", serviceName)),
-		Project:        pulumi.String(projectID),
+	// TODO create compute address if enabled
+	urlMap, err := compute.NewRegionUrlMap(ctx, fmt.Sprintf("%s-default", serviceName), &compute.RegionUrlMapArgs{
+		Description: pulumi.String(fmt.Sprintf("URL map to LB traffic for %s", serviceName)),
+		Project:     pulumi.String(projectID),
+		// TODO configure
+		Region:         pulumi.String(region),
 		DefaultService: service.SelfLink,
 	})
 	if err != nil {
@@ -136,6 +160,7 @@ func createExternalLoadBalancer(ctx *pulumi.Context, serviceName, network, proje
 			Project:     pulumi.String(projectID),
 			Managed: &computeclassic.ManagedSslCertificateManagedArgs{
 				Domains: pulumi.StringArray{
+					// TODO allow configurable
 					pulumi.String("pathtoprod.dev"),
 				},
 			},
@@ -144,9 +169,10 @@ func createExternalLoadBalancer(ctx *pulumi.Context, serviceName, network, proje
 			return err
 		}
 
-		httpsProxy, err := compute.NewTargetHttpsProxy(ctx, fmt.Sprintf("%s-https", serviceName), &compute.TargetHttpsProxyArgs{
+		httpsProxy, err := compute.NewRegionTargetHttpsProxy(ctx, fmt.Sprintf("%s-https", serviceName), &compute.RegionTargetHttpsProxyArgs{
 			Description: pulumi.String(fmt.Sprintf("proxy to LB traffic for %s", serviceName)),
 			Project:     pulumi.String(projectID),
+			Region:      pulumi.String(region),
 			UrlMap:      urlMap.SelfLink,
 			SslCertificates: pulumi.StringArray{
 				certificate.SelfLink,
@@ -162,10 +188,10 @@ func createExternalLoadBalancer(ctx *pulumi.Context, serviceName, network, proje
 			Network:     pulumi.String(network),
 			Region:      pulumi.String(region),
 			PortRange:   pulumi.String("443"),
+			NetworkTier: compute.ForwardingRuleNetworkTierStandard,
 			// TODO make configurable
-			LoadBalancingScheme: compute.ForwardingRuleLoadBalancingSchemeExternal,
+			LoadBalancingScheme: compute.ForwardingRuleLoadBalancingSchemeExternalManaged,
 			Target:              httpsProxy.SelfLink,
-			BackendService:      service.SelfLink,
 		})
 		if err != nil {
 			return err
@@ -173,10 +199,11 @@ func createExternalLoadBalancer(ctx *pulumi.Context, serviceName, network, proje
 	}
 
 	if httpForward {
-		httpProxy, err := compute.NewTargetHttpProxy(ctx, fmt.Sprintf("%s-http", serviceName), &compute.TargetHttpProxyArgs{
+		httpProxy, err := compute.NewRegionTargetHttpProxy(ctx, fmt.Sprintf("%s-http", serviceName), &compute.RegionTargetHttpProxyArgs{
 			Description: pulumi.String(fmt.Sprintf("proxy to LB traffic for %s", serviceName)),
 			Project:     pulumi.String(projectID),
 			UrlMap:      urlMap.SelfLink,
+			Region:      pulumi.String(region),
 		})
 		if err != nil {
 			return err
@@ -188,10 +215,10 @@ func createExternalLoadBalancer(ctx *pulumi.Context, serviceName, network, proje
 			Network:     pulumi.String(network),
 			Region:      pulumi.String(region),
 			PortRange:   pulumi.String("80"),
+			NetworkTier: compute.ForwardingRuleNetworkTierStandard,
 			// TODO make configurable
-			LoadBalancingScheme: compute.ForwardingRuleLoadBalancingSchemeExternal,
+			LoadBalancingScheme: compute.ForwardingRuleLoadBalancingSchemeExternalManaged,
 			Target:              httpProxy.SelfLink,
-			BackendService:      service.SelfLink,
 		})
 		if err != nil {
 			return err
@@ -209,8 +236,7 @@ func createCloudRunDeployment(ctx *pulumi.Context, image string, serviceName str
 		Project:     pulumi.String(projectID),
 		Description: pulumi.String(fmt.Sprintf("cloud run instance of %s", serviceName)),
 		Location:    pulumi.String(region),
-		// TODO configure for NEG
-		Ingress: cloudrun.ServiceIngressIngressTrafficInternalLoadBalancer,
+		Ingress:     cloudrun.ServiceIngressIngressTrafficInternalLoadBalancer,
 		Template: &cloudrun.GoogleCloudRunV2RevisionTemplateArgs{
 			Containers: &cloudrun.GoogleCloudRunV2ContainerArray{
 				&cloudrun.GoogleCloudRunV2ContainerArgs{
@@ -224,8 +250,18 @@ func createCloudRunDeployment(ctx *pulumi.Context, image string, serviceName str
 		return err
 	}
 
+	// TODO only if external LB enabled
+	_, err = cloudrunv2.NewServiceIamBinding(ctx, serviceName, &cloudrunv2.ServiceIamBindingArgs{
+		Project:  pulumi.String(projectID),
+		Location: pulumi.String(region),
+		Role:     pulumi.String("roles/run.invoker"),
+		Members: pulumi.StringArray{
+			pulumi.String("allUsers"),
+		},
+	})
+
 	// ctx.Export("ip", deployment.IpAddress)
-	return nil
+	return err
 }
 
 func createCloudBuild(ctx *pulumi.Context, image string, serviceName string, projectID string, region string) error {
