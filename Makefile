@@ -14,6 +14,8 @@ bootstrap:
 	gcloud services enable artifactregistry.googleapis.com --project $(GCP_PROJECT)
 	gcloud services enable cloudbuild.googleapis.com  --project $(GCP_PROJECT)
 	gcloud services enable run.googleapis.com --project $(GCP_PROJECT)
+	gcloud services enable certificatemanager.googleapis.com --project $(GCP_PROJECT)
+	gcloud services enable dns.googleapis.com --project $(GCP_PROJECT)
 	# for optional features
 
 image:

@@ -30,7 +30,7 @@ type EnvConfig struct {
 	Debug                      bool   `envconfig:"DEBUG"`
 	EnableExternalLoadBalancer bool   `envconfig:"GCP_EXTERNAL_LOAD_BALANCER_ENABLE"`
 	EnableHTTPForward          bool   `envconfig:"GCP_EXTERNAL_LOAD_BALANCER_HTTP_FORWARD_ENABLE" default:"false"`
-	EnableTLS                  bool   `envconfig:"GCP_EXTERNAL_LOAD_BALANCER_TLS_ENABLE" default:"false"`
+	EnableTLS                  bool   `envconfig:"GCP_EXTERNAL_LOAD_BALANCER_TLS_ENABLE" default:"true"`
 }
 
 func main() {
@@ -97,6 +97,8 @@ func (s *serverlessStack) createExternalLoadBalancer(ctx *pulumi.Context, httpFo
 	network := fmt.Sprintf("projects/%s/global/networks/%s", project, s.config.Network)
 
 	// proxy-only subnet required by Cloud Run to get traffic from the LB
+	// See:
+	// https://cloud.google.com/load-balancing/docs/https#proxy-only-subnet
 	_, err := compute.NewSubnetwork(ctx, fmt.Sprintf("%s-proxy-only", serviceName), &compute.SubnetworkArgs{
 		Description: pulumi.String(fmt.Sprintf("proxy-only subnet for cloud run traffic for %s", serviceName)),
 		Project:     pulumi.String(project),
@@ -124,13 +126,12 @@ func (s *serverlessStack) createExternalLoadBalancer(ctx *pulumi.Context, httpFo
 		return err
 	}
 
-	service, err := compute.NewRegionBackendService(ctx, fmt.Sprintf("%s-default", serviceName), &compute.RegionBackendServiceArgs{
+	service, err := compute.NewBackendService(ctx, fmt.Sprintf("%s-default", serviceName), &compute.BackendServiceArgs{
 		Description: pulumi.String(fmt.Sprintf("service backend for %s", serviceName)),
 		Project:     pulumi.String(project),
 		// TODO change to https
-		Protocol:            compute.RegionBackendServiceProtocolHttp,
-		LoadBalancingScheme: compute.RegionBackendServiceLoadBalancingSchemeExternalManaged,
-		Region:              pulumi.String(region),
+		Protocol:            compute.BackendServiceProtocolHttp,
+		LoadBalancingScheme: compute.BackendServiceLoadBalancingSchemeExternal,
 		// TODO setup heathlcheck
 		Backends: compute.BackendArray{
 			&compute.BackendArgs{
@@ -144,11 +145,11 @@ func (s *serverlessStack) createExternalLoadBalancer(ctx *pulumi.Context, httpFo
 	}
 
 	// TODO create compute address if enabled
-	urlMap, err := compute.NewRegionUrlMap(ctx, fmt.Sprintf("%s-default", serviceName), &compute.RegionUrlMapArgs{
+	urlMap, err := compute.NewUrlMap(ctx, fmt.Sprintf("%s-default", serviceName), &compute.UrlMapArgs{
 		Description: pulumi.String(fmt.Sprintf("URL map to LB traffic for %s", serviceName)),
 		Project:     pulumi.String(project),
 		// TODO configure
-		Region:         pulumi.String(region),
+		// Region:         pulumi.String(region),
 		DefaultService: service.SelfLink,
 	})
 	if err != nil {
@@ -165,7 +166,7 @@ func (s *serverlessStack) createExternalLoadBalancer(ctx *pulumi.Context, httpFo
 			Managed: &computeclassic.ManagedSslCertificateManagedArgs{
 				Domains: pulumi.StringArray{
 					// TODO allow configurable
-					pulumi.String("pathtoprod.dev"),
+					pulumi.String("path2prod.dev"),
 				},
 			},
 		})
@@ -173,10 +174,9 @@ func (s *serverlessStack) createExternalLoadBalancer(ctx *pulumi.Context, httpFo
 			return err
 		}
 
-		httpsProxy, err := compute.NewRegionTargetHttpsProxy(ctx, fmt.Sprintf("%s-https", serviceName), &compute.RegionTargetHttpsProxyArgs{
+		httpsProxy, err := compute.NewTargetHttpsProxy(ctx, fmt.Sprintf("%s-https", serviceName), &compute.TargetHttpsProxyArgs{
 			Description: pulumi.String(fmt.Sprintf("proxy to LB traffic for %s", serviceName)),
 			Project:     pulumi.String(project),
-			Region:      pulumi.String(region),
 			UrlMap:      urlMap.SelfLink,
 			SslCertificates: pulumi.StringArray{
 				certificate.SelfLink,
@@ -186,15 +186,13 @@ func (s *serverlessStack) createExternalLoadBalancer(ctx *pulumi.Context, httpFo
 			return err
 		}
 
-		_, err = compute.NewForwardingRule(ctx, fmt.Sprintf("%s-https", serviceName), &compute.ForwardingRuleArgs{
+		_, err = compute.NewGlobalForwardingRule(ctx, fmt.Sprintf("%s-https", serviceName), &compute.GlobalForwardingRuleArgs{
 			Description: pulumi.String(fmt.Sprintf("HTTPS forwarding rule to LB traffic for %s", serviceName)),
 			Project:     pulumi.String(project),
-			Network:     pulumi.String(network),
-			Region:      pulumi.String(region),
 			PortRange:   pulumi.String("443"),
-			NetworkTier: compute.ForwardingRuleNetworkTierStandard,
+			NetworkTier: compute.GlobalForwardingRuleNetworkTierPremium,
 			// TODO make configurable
-			LoadBalancingScheme: compute.ForwardingRuleLoadBalancingSchemeExternalManaged,
+			LoadBalancingScheme: compute.GlobalForwardingRuleLoadBalancingSchemeExternal,
 			Target:              httpsProxy.SelfLink,
 		})
 		if err != nil {
@@ -203,25 +201,22 @@ func (s *serverlessStack) createExternalLoadBalancer(ctx *pulumi.Context, httpFo
 	}
 
 	if httpForward {
-		httpProxy, err := compute.NewRegionTargetHttpProxy(ctx, fmt.Sprintf("%s-http", serviceName), &compute.RegionTargetHttpProxyArgs{
+		httpProxy, err := compute.NewTargetHttpProxy(ctx, fmt.Sprintf("%s-http", serviceName), &compute.TargetHttpProxyArgs{
 			Description: pulumi.String(fmt.Sprintf("proxy to LB traffic for %s", serviceName)),
 			Project:     pulumi.String(project),
 			UrlMap:      urlMap.SelfLink,
-			Region:      pulumi.String(region),
 		})
 		if err != nil {
 			return err
 		}
 
-		_, err = compute.NewForwardingRule(ctx, fmt.Sprintf("%s-http", serviceName), &compute.ForwardingRuleArgs{
+		_, err = compute.NewGlobalForwardingRule(ctx, fmt.Sprintf("%s-http", serviceName), &compute.GlobalForwardingRuleArgs{
 			Description: pulumi.String(fmt.Sprintf("HTTP forwarding rule to LB traffic for %s", serviceName)),
 			Project:     pulumi.String(project),
-			Network:     pulumi.String(network),
-			Region:      pulumi.String(region),
 			PortRange:   pulumi.String("80"),
-			NetworkTier: compute.ForwardingRuleNetworkTierStandard,
+			NetworkTier: compute.GlobalForwardingRuleNetworkTierPremium,
 			// TODO make configurable
-			LoadBalancingScheme: compute.ForwardingRuleLoadBalancingSchemeExternalManaged,
+			LoadBalancingScheme: compute.GlobalForwardingRuleLoadBalancingSchemeExternal,
 			Target:              httpProxy.SelfLink,
 		})
 		if err != nil {
