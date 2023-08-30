@@ -5,10 +5,6 @@ import (
 
 	"github.com/kelseyhightower/envconfig"
 
-	// cloudrun "github.com/pulumi/pulumi-gcp-global-cloudrun/sdk/go/gcp"
-	// "github.com/pulumi/pulumi-gcp/sdk/v6/go/gcp/artifactregistry"
-	// "github.com/pulumi/pulumi-gcp/sdk/v6/go/gcp/cloudrunv2"
-
 	computeclassic "github.com/pulumi/pulumi-gcp/sdk/v5/go/gcp/compute"
 	artifactregistry "github.com/pulumi/pulumi-google-native/sdk/go/google/artifactregistry/v1"
 	cloudbuild "github.com/pulumi/pulumi-google-native/sdk/go/google/cloudbuild/v1"
@@ -98,6 +94,55 @@ type serverlessStack struct {
 func (s *serverlessStack) createExternalLoadBalancer(ctx *pulumi.Context) error {
 
 	serviceName := s.config.ServiceName
+	project := s.config.Project
+
+	backendUrlMap, err := s.createCloudRunNEG(ctx)
+	if err != nil {
+		return err
+	}
+
+	if s.config.EnableTLS {
+		err = s.createHTTPSProxy(ctx, backendUrlMap)
+		if err != nil {
+			return err
+		}
+	}
+
+	if s.config.EnableHTTPForward {
+		var httpProxyUrlMap pulumi.StringOutput
+		if s.config.EnableHTTPSRedirect {
+			// See:
+			// https://github.com/terraform-google-modules/terraform-google-lb-http/blob/2a11956a2ed58fd60f1dde5a8277b8aeef70e6db/main.tf#L171
+			httpRedirectUrlMap, err := compute.NewUrlMap(ctx, fmt.Sprintf("%s-https-redirect", serviceName), &compute.UrlMapArgs{
+				Description: pulumi.String(fmt.Sprintf("URL map redirect from HTTP to HTTPS for %s", serviceName)),
+				Project:     pulumi.String(project),
+				DefaultUrlRedirect: compute.HttpRedirectActionArgs{
+					HttpsRedirect:        pulumi.Bool(true),
+					RedirectResponseCode: compute.HttpRedirectActionRedirectResponseCodeMovedPermanentlyDefault,
+					StripQuery:           pulumi.Bool(false),
+				},
+			})
+			if err != nil {
+				return err
+			}
+			// point the HTTP proxy to the redirect map
+			httpProxyUrlMap = httpRedirectUrlMap.SelfLink
+		} else {
+			// point the HTTP proxy to the default backend map
+			httpProxyUrlMap = backendUrlMap.SelfLink
+		}
+
+		err := s.createHTTPProxy(ctx, httpProxyUrlMap)
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func (s *serverlessStack) createCloudRunNEG(ctx *pulumi.Context) (*compute.UrlMap, error) {
+	serviceName := s.config.ServiceName
 	region := s.config.Region
 	project := s.config.Project
 	network := fmt.Sprintf("projects/%s/global/networks/%s", project, s.config.Network)
@@ -116,7 +161,7 @@ func (s *serverlessStack) createExternalLoadBalancer(ctx *pulumi.Context) error 
 		Role:        compute.SubnetworkRoleActive,
 	})
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	neg, err := compute.NewRegionNetworkEndpointGroup(ctx, fmt.Sprintf("%s-default", serviceName), &compute.RegionNetworkEndpointGroupArgs{
@@ -129,7 +174,7 @@ func (s *serverlessStack) createExternalLoadBalancer(ctx *pulumi.Context) error 
 		},
 	})
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	service, err := compute.NewBackendService(ctx, fmt.Sprintf("%s-default", serviceName), &compute.BackendServiceArgs{
@@ -144,105 +189,79 @@ func (s *serverlessStack) createExternalLoadBalancer(ctx *pulumi.Context) error 
 		// TODO allow enabling IAP (Identity Aware Proxy)
 	})
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	// TODO create compute address if enabled
-	urlMap, err := compute.NewUrlMap(ctx, fmt.Sprintf("%s-default", serviceName), &compute.UrlMapArgs{
+	defaultBackendUrlMap, err := compute.NewUrlMap(ctx, fmt.Sprintf("%s-default", serviceName), &compute.UrlMapArgs{
 		Description:    pulumi.String(fmt.Sprintf("URL map to LB traffic for %s", serviceName)),
 		Project:        pulumi.String(project),
 		DefaultService: service.SelfLink,
+	})
+	return defaultBackendUrlMap, err
+}
+
+func (s *serverlessStack) createHTTPProxy(ctx *pulumi.Context, httpProxyUrlMap pulumi.StringOutput) error {
+	serviceName := s.config.ServiceName
+	project := s.config.Project
+	httpProxy, err := compute.NewTargetHttpProxy(ctx, fmt.Sprintf("%s-http", serviceName), &compute.TargetHttpProxyArgs{
+		Description: pulumi.String(fmt.Sprintf("proxy to LB traffic for %s", serviceName)),
+		Project:     pulumi.String(project),
+		UrlMap:      httpProxyUrlMap,
 	})
 	if err != nil {
 		return err
 	}
 
-	var httpProxyUrlMap pulumi.StringOutput
-	if s.config.EnableHTTPSRedirect {
-		// See:
-		// https://github.com/terraform-google-modules/terraform-google-lb-http/blob/2a11956a2ed58fd60f1dde5a8277b8aeef70e6db/main.tf#L171
-		httpRedirectUrlMap, err := compute.NewUrlMap(ctx, fmt.Sprintf("%s-https-redirect", serviceName), &compute.UrlMapArgs{
-			Description: pulumi.String(fmt.Sprintf("URL map redirect from HTTP to HTTPS for %s", serviceName)),
-			Project:     pulumi.String(project),
-			DefaultUrlRedirect: compute.HttpRedirectActionArgs{
-				HttpsRedirect:        pulumi.Bool(true),
-				RedirectResponseCode: compute.HttpRedirectActionRedirectResponseCodeMovedPermanentlyDefault,
-				StripQuery:           pulumi.Bool(false),
+	_, err = compute.NewGlobalForwardingRule(ctx, fmt.Sprintf("%s-http", serviceName), &compute.GlobalForwardingRuleArgs{
+		Description:         pulumi.String(fmt.Sprintf("HTTP forwarding rule to LB traffic for %s", serviceName)),
+		Project:             pulumi.String(project),
+		PortRange:           pulumi.String("80"),
+		NetworkTier:         compute.GlobalForwardingRuleNetworkTierPremium,
+		LoadBalancingScheme: compute.GlobalForwardingRuleLoadBalancingSchemeExternal,
+		Target:              httpProxy.SelfLink,
+	})
+	return err
+}
+
+func (s *serverlessStack) createHTTPSProxy(ctx *pulumi.Context, urlMap *compute.UrlMap) error {
+	serviceName := s.config.ServiceName
+	project := s.config.Project
+
+	certificate, err := computeclassic.NewManagedSslCertificate(ctx, fmt.Sprintf("%s-tls", serviceName), &computeclassic.ManagedSslCertificateArgs{
+		Description: pulumi.String(fmt.Sprintf("TLS cert for %s", serviceName)),
+		Project:     pulumi.String(project),
+		Managed: &computeclassic.ManagedSslCertificateManagedArgs{
+			Domains: pulumi.StringArray{
+				pulumi.String(s.config.TLSDomainName),
 			},
-		})
-		if err != nil {
-			return err
-		}
-		// point the HTTP proxy to the redirect map
-		httpProxyUrlMap = httpRedirectUrlMap.SelfLink
-	} else {
-		// point the HTTP proxy to the default backend map
-		httpProxyUrlMap = urlMap.SelfLink
+		},
+	})
+	if err != nil {
+		return err
 	}
 
-	if s.config.EnableTLS {
-		certificate, err := computeclassic.NewManagedSslCertificate(ctx, fmt.Sprintf("%s-tls", serviceName), &computeclassic.ManagedSslCertificateArgs{
-			Description: pulumi.String(fmt.Sprintf("TLS cert for %s", serviceName)),
-			Project:     pulumi.String(project),
-			Managed: &computeclassic.ManagedSslCertificateManagedArgs{
-				Domains: pulumi.StringArray{
-					pulumi.String(s.config.TLSDomainName),
-				},
-			},
-		})
-		if err != nil {
-			return err
-		}
-
-		httpsProxy, err := compute.NewTargetHttpsProxy(ctx, fmt.Sprintf("%s-https", serviceName), &compute.TargetHttpsProxyArgs{
-			Description: pulumi.String(fmt.Sprintf("proxy to LB traffic for %s", serviceName)),
-			Project:     pulumi.String(project),
-			UrlMap:      urlMap.SelfLink,
-			SslCertificates: pulumi.StringArray{
-				certificate.SelfLink,
-			},
-		})
-		if err != nil {
-			return err
-		}
-
-		_, err = compute.NewGlobalForwardingRule(ctx, fmt.Sprintf("%s-https", serviceName), &compute.GlobalForwardingRuleArgs{
-			Description:         pulumi.String(fmt.Sprintf("HTTPS forwarding rule to LB traffic for %s", serviceName)),
-			Project:             pulumi.String(project),
-			PortRange:           pulumi.String("443"),
-			NetworkTier:         compute.GlobalForwardingRuleNetworkTierPremium,
-			LoadBalancingScheme: compute.GlobalForwardingRuleLoadBalancingSchemeExternal,
-			Target:              httpsProxy.SelfLink,
-		})
-		if err != nil {
-			return err
-		}
+	httpsProxy, err := compute.NewTargetHttpsProxy(ctx, fmt.Sprintf("%s-https", serviceName), &compute.TargetHttpsProxyArgs{
+		Description: pulumi.String(fmt.Sprintf("proxy to LB traffic for %s", serviceName)),
+		Project:     pulumi.String(project),
+		UrlMap:      urlMap.SelfLink,
+		SslCertificates: pulumi.StringArray{
+			certificate.SelfLink,
+		},
+	})
+	if err != nil {
+		return err
 	}
 
-	if s.config.EnableHTTPForward {
-		httpProxy, err := compute.NewTargetHttpProxy(ctx, fmt.Sprintf("%s-http", serviceName), &compute.TargetHttpProxyArgs{
-			Description: pulumi.String(fmt.Sprintf("proxy to LB traffic for %s", serviceName)),
-			Project:     pulumi.String(project),
-			UrlMap:      httpProxyUrlMap,
-		})
-		if err != nil {
-			return err
-		}
-
-		_, err = compute.NewGlobalForwardingRule(ctx, fmt.Sprintf("%s-http", serviceName), &compute.GlobalForwardingRuleArgs{
-			Description:         pulumi.String(fmt.Sprintf("HTTP forwarding rule to LB traffic for %s", serviceName)),
-			Project:             pulumi.String(project),
-			PortRange:           pulumi.String("80"),
-			NetworkTier:         compute.GlobalForwardingRuleNetworkTierPremium,
-			LoadBalancingScheme: compute.GlobalForwardingRuleLoadBalancingSchemeExternal,
-			Target:              httpProxy.SelfLink,
-		})
-		if err != nil {
-			return err
-		}
-	}
-
-	return nil
+	_, err = compute.NewGlobalForwardingRule(ctx, fmt.Sprintf("%s-https", serviceName), &compute.GlobalForwardingRuleArgs{
+		Description:         pulumi.String(fmt.Sprintf("HTTPS forwarding rule to LB traffic for %s", serviceName)),
+		Project:             pulumi.String(project),
+		PortRange:           pulumi.String("443"),
+		NetworkTier:         compute.GlobalForwardingRuleNetworkTierPremium,
+		LoadBalancingScheme: compute.GlobalForwardingRuleLoadBalancingSchemeExternal,
+		Target:              httpsProxy.SelfLink,
+	})
+	return err
 }
 
 func (s *serverlessStack) createCloudRunDeployment(ctx *pulumi.Context, image string) error {
