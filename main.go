@@ -20,23 +20,22 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
-const GCP_DOCKER_REGISTRY = "us-docker.pkg.dev"
-
 type EnvConfig struct {
 	ServiceName                string `envconfig:"GCP_RUN_SERVICE_NAME" required:"true"`
 	Project                    string `envconfig:"GCP_PROJECT" required:"true"`
 	Region                     string `envconfig:"GCP_REGION" default:"us-central1"`
 	Network                    string `envconfig:"GCP_NETWORK" default:"default"`
-	Debug                      bool   `envconfig:"DEBUG"`
 	EnableUnauthenticated      bool   `envconfig:"GCP_RUN_SERVICE_UNAUTHENTICATED_ENABLE" default:"false"`
-	EnableExternalLoadBalancer bool   `envconfig:"GCP_EXTERNAL_LOAD_BALANCER_ENABLE"`
+	EnableExternalLoadBalancer bool   `envconfig:"GCP_EXTERNAL_LOAD_BALANCER_ENABLE" default:"false"`
 	EnableTLS                  bool   `envconfig:"GCP_EXTERNAL_LOAD_BALANCER_TLS_ENABLE" default:"false"`
 	EnableHTTPForward          bool   `envconfig:"GCP_EXTERNAL_LOAD_BALANCER_HTTP_FORWARD_ENABLE" default:"false"`
 	EnableHTTPSRedirect        bool   `envconfig:"GCP_EXTERNAL_LOAD_BALANCER_HTTPS_REDIRECT_ENABLE" default:"false"`
-	TLSDomainName              string `envconfig:"GCP_EXTERNAL_LOAD_BALANCER_TLS_DOMAIN" required:"true"`
+	TLSDomainName              string `envconfig:"GCP_EXTERNAL_LOAD_BALANCER_TLS_DOMAIN" required:"false"`
 	ProxyOnlySubnetIPRange     string `envconfig:"GCP_EXTERNAL_LOAD_BALANCER_PROXY_ONLY_SUBNET_CIDR" default:"10.127.0.0/24"`
 	CloudBuildSourceRepoURL    string `envconfig:"GCP_CLOUD_BUILD_SOURCE_REPO_URL" default:"https://github.com/davidmontoyago/pulumi-cloud-run-service.git"`
 	CloudBuildBuilderImage     string `envconfig:"GCP_CLOUD_BUILD_DOCKER_BUILDER_IMAGE" default:"gcr.io/cloud-builders/docker"`
+	ArtifactRegistryURL        string `envconfig:"GCP_ARTIFACT_REGISTRY_URL" default:"us-docker.pkg.dev"`
+	Debug                      bool   `envconfig:"DEBUG"`
 }
 
 func main() {
@@ -49,15 +48,15 @@ func main() {
 			config: envVars,
 		}
 
-		image := fmt.Sprintf("%s/%s/%s/api", GCP_DOCKER_REGISTRY, envVars.Project, envVars.ServiceName)
-
-		err := stack.createDockerArtifactRepository(ctx, envVars.ServiceName)
+		err := stack.createDockerArtifactRepository(ctx)
 		if err != nil {
 			return err
 		}
 
+		image := fmt.Sprintf("%s/%s/%s/api", stack.config.ArtifactRegistryURL, stack.config.Project, stack.config.ServiceName)
+
 		// trigger an initial build. subsequent builds would be handled by triggers
-		// err = stack.createCloudBuild(ctx, image, serviceName, projectID, envVars.Region)
+		// err = stack.createCloudBuild(ctx, image)
 		if err != nil {
 			log.Warn().Err(err)
 			return err
@@ -295,7 +294,7 @@ func (s *serverlessStack) createCloudRunDeployment(ctx *pulumi.Context, image st
 	return nil
 }
 
-func (s *serverlessStack) createCloudBuild(ctx *pulumi.Context, image string, serviceName string, region string) error {
+func (s *serverlessStack) createCloudBuild(ctx *pulumi.Context, image string) error {
 	var buildSteps cloudbuild.BuildStepArray
 	buildSteps = append(buildSteps, &cloudbuild.BuildStepArgs{
 		Name: pulumi.String(s.config.CloudBuildBuilderImage),
@@ -316,10 +315,10 @@ func (s *serverlessStack) createCloudBuild(ctx *pulumi.Context, image string, se
 			pulumi.Int(128),
 		},
 	})
-	_, err := cloudbuild.NewBuild(ctx, serviceName, &cloudbuild.BuildArgs{
+	_, err := cloudbuild.NewBuild(ctx, s.config.ServiceName, &cloudbuild.BuildArgs{
 		ProjectId: pulumi.String(s.config.Project),
 		Project:   pulumi.String(s.config.Project),
-		Location:  pulumi.String(region),
+		Location:  pulumi.String(s.config.Region),
 		Steps:     buildSteps,
 		Images: pulumi.StringArray{
 			pulumi.String(image),
@@ -336,7 +335,8 @@ func (s *serverlessStack) createCloudBuild(ctx *pulumi.Context, image string, se
 	return err
 }
 
-func (s *serverlessStack) createDockerArtifactRepository(ctx *pulumi.Context, serviceName string) error {
+func (s *serverlessStack) createDockerArtifactRepository(ctx *pulumi.Context) error {
+	serviceName := s.config.ServiceName
 	_, err := artifactregistry.NewRepository(ctx, serviceName, &artifactregistry.RepositoryArgs{
 		Description:  pulumi.String(fmt.Sprintf("docker images for service %s", serviceName)),
 		Format:       artifactregistry.RepositoryFormatPtr("DOCKER"),
