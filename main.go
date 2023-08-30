@@ -32,6 +32,7 @@ type EnvConfig struct {
 	EnableHTTPForward          bool   `envconfig:"GCP_EXTERNAL_LOAD_BALANCER_HTTP_FORWARD_ENABLE" default:"false"`
 	EnableTLS                  bool   `envconfig:"GCP_EXTERNAL_LOAD_BALANCER_TLS_ENABLE" default:"false"`
 	TLSDomainName              string `envconfig:"GCP_EXTERNAL_LOAD_BALANCER_TLS_DOMAIN" required:"true"`
+	ProxyOnlySubnetIPRange     string `envconfig:"GCP_EXTERNAL_LOAD_BALANCER_PROXY_ONLY_SUBNET_CIDR" default:"10.127.0.0/24"`
 	EnableUnauthenticated      bool   `envconfig:"GCP_RUN_SERVICE_UNAUTHENTICATED_ENABLE" default:"false"`
 }
 
@@ -109,7 +110,7 @@ func (s *serverlessStack) createExternalLoadBalancer(ctx *pulumi.Context) error 
 		Purpose:     compute.SubnetworkPurposeRegionalManagedProxy,
 		Network:     pulumi.String(network),
 		// Extended subnetworks in auto subnet mode networks cannot overlap with 10.128.0.0/9
-		IpCidrRange: pulumi.String("10.127.0.0/24"),
+		IpCidrRange: pulumi.String(s.config.ProxyOnlySubnetIPRange),
 		Role:        compute.SubnetworkRoleActive,
 	})
 	if err != nil {
@@ -130,12 +131,9 @@ func (s *serverlessStack) createExternalLoadBalancer(ctx *pulumi.Context) error 
 	}
 
 	service, err := compute.NewBackendService(ctx, fmt.Sprintf("%s-default", serviceName), &compute.BackendServiceArgs{
-		Description: pulumi.String(fmt.Sprintf("service backend for %s", serviceName)),
-		Project:     pulumi.String(project),
-		// TODO change to https
-		Protocol:            compute.BackendServiceProtocolHttp,
+		Description:         pulumi.String(fmt.Sprintf("service backend for %s", serviceName)),
+		Project:             pulumi.String(project),
 		LoadBalancingScheme: compute.BackendServiceLoadBalancingSchemeExternal,
-		// TODO setup heathlcheck
 		Backends: compute.BackendArray{
 			&compute.BackendArgs{
 				Group: neg.SelfLink,
