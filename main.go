@@ -23,14 +23,16 @@ import (
 const GCP_DOCKER_REGISTRY = "us-docker.pkg.dev"
 
 type EnvConfig struct {
-	ServiceName                string `envconfig:"SERVICE_NAME" required:"true"`
+	ServiceName                string `envconfig:"GCP_RUN_SERVICE_NAME" required:"true"`
 	Project                    string `envconfig:"GCP_PROJECT" required:"true"`
 	Region                     string `envconfig:"GCP_REGION" default:"us-central1"`
-	Network                    string `envconfig:"GCP_NETWORK" required:"true"`
+	Network                    string `envconfig:"GCP_NETWORK" default:"default"`
 	Debug                      bool   `envconfig:"DEBUG"`
 	EnableExternalLoadBalancer bool   `envconfig:"GCP_EXTERNAL_LOAD_BALANCER_ENABLE"`
 	EnableHTTPForward          bool   `envconfig:"GCP_EXTERNAL_LOAD_BALANCER_HTTP_FORWARD_ENABLE" default:"false"`
-	EnableTLS                  bool   `envconfig:"GCP_EXTERNAL_LOAD_BALANCER_TLS_ENABLE" default:"true"`
+	EnableTLS                  bool   `envconfig:"GCP_EXTERNAL_LOAD_BALANCER_TLS_ENABLE" default:"false"`
+	TLSDomainName              string `envconfig:"GCP_EXTERNAL_LOAD_BALANCER_TLS_DOMAIN" required:"true"`
+	EnableUnauthenticated      bool   `envconfig:"GCP_RUN_SERVICE_UNAUTHENTICATED_ENABLE" default:"false"`
 }
 
 func main() {
@@ -66,7 +68,7 @@ func main() {
 			// add an optional GCLB to support Cloud CDN, Armor and IAP
 			// See:
 			// https://github.com/ahmetb/cloud-run-faq/blob/master/README.md#how-does-cloud-runs-load-balancing-compare-with-cloud-load-balancer-gclb
-			err = stack.createExternalLoadBalancer(ctx, envVars.EnableHTTPForward, envVars.EnableTLS)
+			err = stack.createExternalLoadBalancer(ctx)
 			if err != nil {
 				return err
 			}
@@ -80,16 +82,17 @@ type serverlessStack struct {
 	config EnvConfig
 }
 
-// createExternalLoadBalancer setups a regional classic Application Load Balancer
-// with the following feats:
+// createExternalLoadBalancer sets up a global classic Application Load Balancer
+// in front of the Run Service with the following feats:
 //
-// - HTTPS by default with GCP managed certificate, HTTP if enabled
+// - HTTPS by default with GCP managed certificate
+// - HTTP forward & redirect to HTTPs
 // - IAP if enabled
 // - IP blocklisting if enabled
 //
 // See:
-// https://cloud.google.com/load-balancing/docs/https/setting-up-reg-ext-https-serverless
-func (s *serverlessStack) createExternalLoadBalancer(ctx *pulumi.Context, httpForward, tls bool) error {
+// https://cloud.google.com/load-balancing/docs/https/setting-up-https-serverless
+func (s *serverlessStack) createExternalLoadBalancer(ctx *pulumi.Context) error {
 
 	serviceName := s.config.ServiceName
 	region := s.config.Region
@@ -149,7 +152,6 @@ func (s *serverlessStack) createExternalLoadBalancer(ctx *pulumi.Context, httpFo
 		Description: pulumi.String(fmt.Sprintf("URL map to LB traffic for %s", serviceName)),
 		Project:     pulumi.String(project),
 		// TODO configure
-		// Region:         pulumi.String(region),
 		DefaultService: service.SelfLink,
 	})
 	if err != nil {
@@ -159,14 +161,13 @@ func (s *serverlessStack) createExternalLoadBalancer(ctx *pulumi.Context, httpFo
 	// TODO setup UrlMAP for HTTPS redirect
 	// https://github.com/terraform-google-modules/terraform-google-lb-http/blob/2a11956a2ed58fd60f1dde5a8277b8aeef70e6db/main.tf#L171
 
-	if tls {
+	if s.config.EnableTLS {
 		certificate, err := computeclassic.NewManagedSslCertificate(ctx, fmt.Sprintf("%s-tls", serviceName), &computeclassic.ManagedSslCertificateArgs{
 			Description: pulumi.String(fmt.Sprintf("TLS cert for %s", serviceName)),
 			Project:     pulumi.String(project),
 			Managed: &computeclassic.ManagedSslCertificateManagedArgs{
 				Domains: pulumi.StringArray{
-					// TODO allow configurable
-					pulumi.String("path2prod.dev"),
+					pulumi.String(s.config.TLSDomainName),
 				},
 			},
 		})
@@ -200,7 +201,7 @@ func (s *serverlessStack) createExternalLoadBalancer(ctx *pulumi.Context, httpFo
 		}
 	}
 
-	if httpForward {
+	if s.config.EnableHTTPForward {
 		httpProxy, err := compute.NewTargetHttpProxy(ctx, fmt.Sprintf("%s-http", serviceName), &compute.TargetHttpProxyArgs{
 			Description: pulumi.String(fmt.Sprintf("proxy to LB traffic for %s", serviceName)),
 			Project:     pulumi.String(project),
@@ -253,8 +254,7 @@ func (s *serverlessStack) createCloudRunDeployment(ctx *pulumi.Context, image st
 		return err
 	}
 
-	// TODO enable only if external LB enabled
-	if 1 == 0 {
+	if s.config.EnableUnauthenticated {
 		_, err = cloudrunv1.NewServiceIamPolicy(ctx, serviceName, &cloudrunv1.ServiceIamPolicyArgs{
 			Location:  pulumi.String(region),
 			Project:   pulumi.String(project),

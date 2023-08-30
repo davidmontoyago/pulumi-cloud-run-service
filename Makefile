@@ -1,7 +1,3 @@
-GCP_PROJECT := "bots-backend-1"
-SERVICE_NAME := "yoshimi-api"
-GCP_NETWORK := "default"
-
 .PHONY: build
 
 deps:
@@ -26,8 +22,4 @@ build:
 	go build -o ./build/
 
 deploy: build
-	SERVICE_NAME=$(SERVICE_NAME) \
-	GCP_PROJECT=$(GCP_PROJECT) \
-	GCP_NETWORK=$(GCP_NETWORK) \
-	GCP_EXTERNAL_LOAD_BALANCER_ENABLE=$(GCP_EXTERNAL_LOAD_BALANCER_ENABLE) \
 	pulumi up --verbose=3
