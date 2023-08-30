@@ -35,6 +35,8 @@ type EnvConfig struct {
 	EnableHTTPSRedirect        bool   `envconfig:"GCP_EXTERNAL_LOAD_BALANCER_HTTPS_REDIRECT_ENABLE" default:"false"`
 	TLSDomainName              string `envconfig:"GCP_EXTERNAL_LOAD_BALANCER_TLS_DOMAIN" required:"true"`
 	ProxyOnlySubnetIPRange     string `envconfig:"GCP_EXTERNAL_LOAD_BALANCER_PROXY_ONLY_SUBNET_CIDR" default:"10.127.0.0/24"`
+	CloudBuildSourceRepoURL    string `envconfig:"GCP_CLOUD_BUILD_SOURCE_REPO_URL" default:"https://github.com/davidmontoyago/pulumi-cloud-run-service.git"`
+	CloudBuildBuilderImage     string `envconfig:"GCP_CLOUD_BUILD_DOCKER_BUILDER_IMAGE" default:"gcr.io/cloud-builders/docker"`
 }
 
 func main() {
@@ -296,7 +298,7 @@ func (s *serverlessStack) createCloudRunDeployment(ctx *pulumi.Context, image st
 func (s *serverlessStack) createCloudBuild(ctx *pulumi.Context, image string, serviceName string, region string) error {
 	var buildSteps cloudbuild.BuildStepArray
 	buildSteps = append(buildSteps, &cloudbuild.BuildStepArgs{
-		Name: pulumi.String("gcr.io/cloud-builders/docker"),
+		Name: pulumi.String(s.config.CloudBuildBuilderImage),
 		Dir:  pulumi.String("."),
 		Args: pulumi.StringArray{
 			pulumi.String("build"),
@@ -325,9 +327,8 @@ func (s *serverlessStack) createCloudBuild(ctx *pulumi.Context, image string, se
 		Source: &cloudbuild.SourceArgs{
 			// TODO configure credentials + pulumi secrets
 			GitSource: &cloudbuild.GitSourceArgs{
-				Dir: pulumi.String("."),
-				// TODO read from pulumi properties
-				Url:      pulumi.String("https://github.com/davidmontoyago/pulumi-cloud-run-service.git"),
+				Dir:      pulumi.String("."),
+				Url:      pulumi.String(s.config.CloudBuildSourceRepoURL),
 				Revision: pulumi.String("HEAD"),
 			},
 		},
