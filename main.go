@@ -26,6 +26,7 @@ type EnvConfig struct {
 	EnableTLS                  bool   `envconfig:"GCP_EXTERNAL_LOAD_BALANCER_TLS_ENABLE" default:"false"`
 	EnableHTTPForward          bool   `envconfig:"GCP_EXTERNAL_LOAD_BALANCER_HTTP_FORWARD_ENABLE" default:"false"`
 	EnableHTTPSRedirect        bool   `envconfig:"GCP_EXTERNAL_LOAD_BALANCER_HTTPS_REDIRECT_ENABLE" default:"false"`
+	EnableCloudArmor           bool   `envconfig:"GCP_EXTERNAL_LOAD_BALANCER_CLOUD_ARMOR_ENABLE" default:"false"`
 	TLSDomainName              string `envconfig:"GCP_EXTERNAL_LOAD_BALANCER_TLS_DOMAIN" required:"false"`
 	ProxyOnlySubnetIPRange     string `envconfig:"GCP_EXTERNAL_LOAD_BALANCER_PROXY_ONLY_SUBNET_CIDR" default:"10.127.0.0/24"`
 	CloudBuildSourceRepoURL    string `envconfig:"GCP_CLOUD_BUILD_SOURCE_REPO_URL" default:"https://github.com/davidmontoyago/pulumi-cloud-run-service.git"`
@@ -133,6 +134,13 @@ func (s *serverlessStack) createExternalLoadBalancer(ctx *pulumi.Context) error 
 		}
 
 		err := s.createHTTPProxy(ctx, httpProxyUrlMap)
+		if err != nil {
+			return err
+		}
+	}
+
+	if s.config.EnableCloudArmor {
+		err = s.createCloudArmorSecurityPolicy(ctx)
 		if err != nil {
 			return err
 		}
@@ -311,6 +319,47 @@ func (s *serverlessStack) createCloudRunDeployment(ctx *pulumi.Context, image st
 
 	// ctx.Export("ip", deployment.IpAddress)
 	return nil
+}
+
+func (s *serverlessStack) createCloudArmorSecurityPolicy(ctx *pulumi.Context) error {
+	project := s.config.Project
+	serviceName := s.config.ServiceName
+
+	// See: https://cloud.google.com/armor/docs/waf-rules
+	var preconfiguredRules compute.SecurityPolicyRuleArray
+	for _, rule := range []string{
+		"sqli-v33-stable",
+		"xss-v33-stable",
+		"lfi-v33-stable",
+		"rfi-v33-stable",
+		"rce-v33-stable",
+		"methodenforcement-v33-stable",
+		"scannerdetection-v33-stable",
+		"protocolattack-v33-stable",
+		"sessionfixation-v33-stable",
+		"nodejs-v33-stable",
+	} {
+		preconfiguredWafRule := fmt.Sprintf("evaluatePreconfiguredWaf('%s', {'sensitivity': 1})", rule)
+		preconfiguredRules = append(preconfiguredRules, &compute.SecurityPolicyRuleArgs{
+			Description: pulumi.String(fmt.Sprintf("preconfigured waf rule %s", rule)),
+			Match: &compute.SecurityPolicyRuleMatcherArgs{
+				Expr: &compute.ExprArgs{
+					Expression: pulumi.String(preconfiguredWafRule),
+				},
+			},
+		})
+	}
+
+	// TODO add rate limiting rules
+
+	// TODO add named IP preconfigured rules
+
+	_, err := compute.NewSecurityPolicy(ctx, serviceName, &compute.SecurityPolicyArgs{
+		Description: pulumi.String(fmt.Sprintf("cloud armor security policy for %s", serviceName)),
+		Project:     pulumi.String(project),
+		Rules:       preconfiguredRules,
+	})
+	return err
 }
 
 func (s *serverlessStack) createCloudBuild(ctx *pulumi.Context, image string) error {

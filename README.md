@@ -22,11 +22,23 @@ make bootstrap
 ```
 
 ## configure
-TODO vars
 ```
+export GCP_RUN_SERVICE_NAME="my-bot-api"
+export GCP_PROJECT="my-bots-project"
+export GCP_REGION="us-central-1"
+export GCP_NETWORK="default"
+export GCP_RUN_SERVICE_UNAUTHENTICATED_ENABLE=true
+export GCP_EXTERNAL_LOAD_BALANCER_ENABLE=true
+export GCP_EXTERNAL_LOAD_BALANCER_TLS_ENABLE=true
+export GCP_EXTERNAL_LOAD_BALANCER_HTTP_FORWARD_ENABLE=true
+export GCP_EXTERNAL_LOAD_BALANCER_HTTPS_REDIRECT_ENABLE=true
+export GCP_EXTERNAL_LOAD_BALANCER_CLOUD_ARMOR_ENABLE=true
+export GCP_EXTERNAL_LOAD_BALANCER_TLS_DOMAIN="my-bot-api.example.org"
+export GCP_CLOUD_BUILD_SOURCE_REPO_URL=<repo url for cloud build>
+export GCP_ARTIFACT_REGISTRY_URL=us-docker.pkg.dev
 ```
 
 ## launch
-``````
-make deploy
+```
+pulumi up
 ```
