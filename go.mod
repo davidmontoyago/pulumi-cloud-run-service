@@ -6,7 +6,7 @@ go 1.18
 
 require (
 	github.com/kelseyhightower/envconfig v1.4.0
-	github.com/pulumi/pulumi-gcp-global-cloudrun/sdk v0.0.3
+	github.com/pulumi/pulumi-gcp/sdk/v5 v5.26.0
 	github.com/pulumi/pulumi-google-native/sdk v0.31.1
 	github.com/pulumi/pulumi/sdk/v3 v3.78.1
 	github.com/rs/zerolog v1.30.0
@@ -48,9 +48,6 @@ require (
 	github.com/pjbgf/sha1cd v0.3.0 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
 	github.com/pkg/term v1.1.0 // indirect
-	github.com/pulumi/pulumi-gcp/sdk/v5 v5.26.0 // indirect
-	github.com/pulumi/pulumi-gcp/sdk/v6 v6.64.0 // indirect
-	github.com/pulumi/pulumi-google-native v0.31.1 // indirect
 	github.com/rivo/uniseg v0.4.4 // indirect
 	github.com/rogpeppe/go-internal v1.9.0 // indirect
 	github.com/sabhiram/go-gitignore v0.0.0-20210923224102-525f6e181f06 // indirect

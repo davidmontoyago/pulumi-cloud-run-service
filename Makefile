@@ -1,8 +1,5 @@
 .PHONY: build
 
-deps:
-	brew install buildpacks/tap/pack
-
 bootstrap:
 	# gcloud projects create $(GCP_PROJECT)
 	gcloud config set project $(GCP_PROJECT)

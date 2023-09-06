@@ -313,12 +313,27 @@ func (s *serverlessStack) createCloudArmorSecurityPolicy(ctx *pulumi.Context) (*
 	project := s.config.Project
 	serviceName := s.config.ServiceName
 
-	// TODO add a default deny rule
+	// Every security policy must have a default rule at priority 2147483647 with match condition *.
+	var defaultRules compute.SecurityPolicyRuleArray
+	defaultRules = append(defaultRules, &compute.SecurityPolicyRuleArgs{
+		Action:      pulumi.String("allow"),
+		Description: pulumi.String("default allow rule"),
+		Priority:    pulumi.Int(2147483647),
+		Match: &compute.SecurityPolicyRuleMatcherArgs{
+			VersionedExpr: compute.SecurityPolicyRuleMatcherVersionedExprSrcIpsV1,
+			Config: &compute.SecurityPolicyRuleMatcherConfigArgs{
+				SrcIpRanges: pulumi.StringArray{
+					pulumi.String("*"),
+				},
+			},
+		},
+	})
+
 	// https://github.com/GoogleCloudPlatform/terraform-google-cloud-armor/blob/9ea03ee3ff0778a087888582e806da7342635d69/main.tf#L445
 
 	// See: https://cloud.google.com/armor/docs/waf-rules
 	var preconfiguredRules compute.SecurityPolicyRuleArray
-	for _, rule := range []string{
+	for i, rule := range []string{
 		"sqli-v33-stable",
 		"xss-v33-stable",
 		"lfi-v33-stable",
@@ -334,7 +349,7 @@ func (s *serverlessStack) createCloudArmorSecurityPolicy(ctx *pulumi.Context) (*
 		preconfiguredRules = append(preconfiguredRules, &compute.SecurityPolicyRuleArgs{
 			Action:      pulumi.String("deny(502)"),
 			Description: pulumi.String(fmt.Sprintf("preconfigured waf rule %s", rule)),
-			Priority:    pulumi.Int(10),
+			Priority:    pulumi.Int(20 + i),
 			Match: &compute.SecurityPolicyRuleMatcherArgs{
 				Expr: &compute.ExprArgs{
 					Expression: pulumi.String(preconfiguredWafRule),
@@ -351,7 +366,7 @@ func (s *serverlessStack) createCloudArmorSecurityPolicy(ctx *pulumi.Context) (*
 			ipRanges = append(ipRanges, pulumi.String(ip))
 		}
 
-		ipAllowlistRules = append(preconfiguredRules, &compute.SecurityPolicyRuleArgs{
+		ipAllowlistRules = append(ipAllowlistRules, &compute.SecurityPolicyRuleArgs{
 			Action:      pulumi.String("allow"),
 			Priority:    pulumi.Int(1),
 			Description: pulumi.String(fmt.Sprintf("ip allowlist rule for %s", serviceName)),
@@ -371,7 +386,8 @@ func (s *serverlessStack) createCloudArmorSecurityPolicy(ctx *pulumi.Context) (*
 
 	// TODO add named IP preconfigured rules
 
-	rules := append(ipAllowlistRules, preconfiguredRules...)
+	rules := append(defaultRules, preconfiguredRules...)
+	rules = append(rules, ipAllowlistRules...)
 
 	policy, err := compute.NewSecurityPolicy(ctx, fmt.Sprintf("%s-default", serviceName), &compute.SecurityPolicyArgs{
 		Description: pulumi.String(fmt.Sprintf("cloud armor security policy for %s", serviceName)),
