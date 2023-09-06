@@ -133,7 +133,7 @@ func (s *serverlessStack) createExternalLoadBalancer(ctx *pulumi.Context) error 
 	serviceName := s.config.ServiceName
 	project := s.config.Project
 
-	backendUrlMap, err := s.createCloudRunNEG(ctx)
+	backendService, backendUrlMap, err := s.createCloudRunNEG(ctx)
 	if err != nil {
 		return err
 	}
@@ -176,16 +176,17 @@ func (s *serverlessStack) createExternalLoadBalancer(ctx *pulumi.Context) error 
 	}
 
 	if s.config.EnableCloudArmor {
-		err = s.createCloudArmorSecurityPolicy(ctx)
+		policy, err := s.createCloudArmorSecurityPolicy(ctx)
 		if err != nil {
 			return err
 		}
+		backendService.SecurityPolicy = policy.SelfLink
 	}
 
 	return nil
 }
 
-func (s *serverlessStack) createCloudRunNEG(ctx *pulumi.Context) (*compute.UrlMap, error) {
+func (s *serverlessStack) createCloudRunNEG(ctx *pulumi.Context) (*compute.BackendService, *compute.UrlMap, error) {
 	serviceName := s.config.ServiceName
 	region := s.config.Region
 	project := s.config.Project
@@ -205,7 +206,7 @@ func (s *serverlessStack) createCloudRunNEG(ctx *pulumi.Context) (*compute.UrlMa
 		Role:        compute.SubnetworkRoleActive,
 	})
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	neg, err := compute.NewRegionNetworkEndpointGroup(ctx, fmt.Sprintf("%s-default", serviceName), &compute.RegionNetworkEndpointGroupArgs{
@@ -218,7 +219,7 @@ func (s *serverlessStack) createCloudRunNEG(ctx *pulumi.Context) (*compute.UrlMa
 		},
 	})
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	service, err := compute.NewBackendService(ctx, fmt.Sprintf("%s-default", serviceName), &compute.BackendServiceArgs{
@@ -233,7 +234,7 @@ func (s *serverlessStack) createCloudRunNEG(ctx *pulumi.Context) (*compute.UrlMa
 		// TODO allow enabling IAP (Identity Aware Proxy)
 	})
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	// TODO create compute address if enabled
@@ -242,7 +243,7 @@ func (s *serverlessStack) createCloudRunNEG(ctx *pulumi.Context) (*compute.UrlMa
 		Project:        pulumi.String(project),
 		DefaultService: service.SelfLink,
 	})
-	return defaultBackendUrlMap, err
+	return service, defaultBackendUrlMap, err
 }
 
 func (s *serverlessStack) createHTTPProxy(ctx *pulumi.Context, httpProxyUrlMap pulumi.StringOutput) error {
@@ -308,9 +309,12 @@ func (s *serverlessStack) createHTTPSProxy(ctx *pulumi.Context, urlMap *compute.
 	return err
 }
 
-func (s *serverlessStack) createCloudArmorSecurityPolicy(ctx *pulumi.Context) error {
+func (s *serverlessStack) createCloudArmorSecurityPolicy(ctx *pulumi.Context) (*compute.SecurityPolicy, error) {
 	project := s.config.Project
 	serviceName := s.config.ServiceName
+
+	// TODO add a default deny rule
+	// https://github.com/GoogleCloudPlatform/terraform-google-cloud-armor/blob/9ea03ee3ff0778a087888582e806da7342635d69/main.tf#L445
 
 	// See: https://cloud.google.com/armor/docs/waf-rules
 	var preconfiguredRules compute.SecurityPolicyRuleArray
@@ -328,7 +332,9 @@ func (s *serverlessStack) createCloudArmorSecurityPolicy(ctx *pulumi.Context) er
 	} {
 		preconfiguredWafRule := fmt.Sprintf("evaluatePreconfiguredWaf('%s', {'sensitivity': 1})", rule)
 		preconfiguredRules = append(preconfiguredRules, &compute.SecurityPolicyRuleArgs{
+			Action:      pulumi.String("deny(502)"),
 			Description: pulumi.String(fmt.Sprintf("preconfigured waf rule %s", rule)),
+			Priority:    pulumi.Int(10),
 			Match: &compute.SecurityPolicyRuleMatcherArgs{
 				Expr: &compute.ExprArgs{
 					Expression: pulumi.String(preconfiguredWafRule),
@@ -337,14 +343,45 @@ func (s *serverlessStack) createCloudArmorSecurityPolicy(ctx *pulumi.Context) er
 		})
 	}
 
+	// IP allowlist rule to restrict access to a handful of IPs... not for the enterprise
+	var ipAllowlistRules compute.SecurityPolicyRuleArray
+	if len(s.config.IPAllowlist) > 0 {
+		ipRanges := pulumi.StringArray{}
+		for _, ip := range s.config.IPAllowlist {
+			ipRanges = append(ipRanges, pulumi.String(ip))
+		}
+
+		ipAllowlistRules = append(preconfiguredRules, &compute.SecurityPolicyRuleArgs{
+			Action:      pulumi.String("allow"),
+			Priority:    pulumi.Int(1),
+			Description: pulumi.String(fmt.Sprintf("ip allowlist rule for %s", serviceName)),
+			Match: &compute.SecurityPolicyRuleMatcherArgs{
+				// versioned rule SRC_IPS_V1
+				VersionedExpr: compute.SecurityPolicyRuleMatcherVersionedExprSrcIpsV1,
+				Config: &compute.SecurityPolicyRuleMatcherConfigArgs{
+					SrcIpRanges: ipRanges,
+				},
+			},
+		})
+	}
+
+	// TODO allow reCAPTCHA
+
 	// TODO add rate limiting rules
 
 	// TODO add named IP preconfigured rules
 
-	_, err := compute.NewSecurityPolicy(ctx, serviceName, &compute.SecurityPolicyArgs{
+	rules := append(ipAllowlistRules, preconfiguredRules...)
+
+	policy, err := compute.NewSecurityPolicy(ctx, fmt.Sprintf("%s-default", serviceName), &compute.SecurityPolicyArgs{
 		Description: pulumi.String(fmt.Sprintf("cloud armor security policy for %s", serviceName)),
 		Project:     pulumi.String(project),
-		Rules:       preconfiguredRules,
+		Rules:       rules,
+		Type:        compute.SecurityPolicyTypeCloudArmor,
 	})
-	return err
+	if err != nil {
+		return nil, err
+	}
+
+	return policy, nil
 }

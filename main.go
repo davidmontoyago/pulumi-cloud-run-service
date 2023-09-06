@@ -22,10 +22,12 @@ type EnvConfig struct {
 	EnableCloudArmor           bool   `envconfig:"GCP_EXTERNAL_LOAD_BALANCER_CLOUD_ARMOR_ENABLE" default:"false"`
 	TLSDomainName              string `envconfig:"GCP_EXTERNAL_LOAD_BALANCER_TLS_DOMAIN" required:"false"`
 	ProxyOnlySubnetIPRange     string `envconfig:"GCP_EXTERNAL_LOAD_BALANCER_PROXY_ONLY_SUBNET_CIDR" default:"10.127.0.0/24"`
-	CloudBuildSourceRepoURL    string `envconfig:"GCP_CLOUD_BUILD_SOURCE_REPO_URL" default:"https://github.com/davidmontoyago/pulumi-cloud-run-service.git"`
-	CloudBuildBuilderImage     string `envconfig:"GCP_CLOUD_BUILD_DOCKER_BUILDER_IMAGE" default:"gcr.io/cloud-builders/docker"`
-	ArtifactRegistryURL        string `envconfig:"GCP_ARTIFACT_REGISTRY_URL" default:"us-docker.pkg.dev"`
-	Debug                      bool   `envconfig:"DEBUG"`
+	// comma delimited list of IPs/CIDRs for which traffic should be allowed, if empty all IPs are allowed
+	IPAllowlist             []string `envconfig:"GCP_EXTERNAL_LOAD_BALANCER_IP_ALLOWLIST" default:""`
+	CloudBuildSourceRepoURL string   `envconfig:"GCP_CLOUD_BUILD_SOURCE_REPO_URL" default:"https://github.com/davidmontoyago/pulumi-cloud-run-service.git"`
+	CloudBuildBuilderImage  string   `envconfig:"GCP_CLOUD_BUILD_DOCKER_BUILDER_IMAGE" default:"gcr.io/cloud-builders/docker"`
+	ArtifactRegistryURL     string   `envconfig:"GCP_ARTIFACT_REGISTRY_URL" default:"us-docker.pkg.dev"`
+	Debug                   bool     `envconfig:"DEBUG"`
 }
 
 func main() {
