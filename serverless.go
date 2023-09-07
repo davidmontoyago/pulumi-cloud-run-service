@@ -3,7 +3,7 @@ package main
 import (
 	"fmt"
 
-	computeclassic "github.com/pulumi/pulumi-gcp/sdk/v5/go/gcp/compute"
+	computeclassic "github.com/pulumi/pulumi-gcp/sdk/v6/go/gcp/compute"
 	artifactregistry "github.com/pulumi/pulumi-google-native/sdk/go/google/artifactregistry/v1"
 	cloudbuild "github.com/pulumi/pulumi-google-native/sdk/go/google/cloudbuild/v1"
 	compute "github.com/pulumi/pulumi-google-native/sdk/go/google/compute/v1"
@@ -128,12 +128,22 @@ func (s *serverlessStack) createDockerArtifactRepository(ctx *pulumi.Context) er
 //
 // See:
 // https://cloud.google.com/load-balancing/docs/https/setting-up-https-serverless
+// https://cloud.google.com/load-balancing/docs/negs/serverless-neg-concepts#and
 func (s *serverlessStack) createExternalLoadBalancer(ctx *pulumi.Context) error {
 
 	serviceName := s.config.ServiceName
 	project := s.config.Project
 
-	backendService, backendUrlMap, err := s.createCloudRunNEG(ctx)
+	var cloudArmorPolicyURL pulumi.StringOutput
+	if s.config.EnableCloudArmor {
+		policy, err := s.createCloudArmorSecurityPolicy(ctx)
+		if err != nil {
+			return err
+		}
+		cloudArmorPolicyURL = policy.SelfLink
+	}
+
+	backendUrlMap, err := s.createCloudRunNEG(ctx, cloudArmorPolicyURL)
 	if err != nil {
 		return err
 	}
@@ -175,18 +185,10 @@ func (s *serverlessStack) createExternalLoadBalancer(ctx *pulumi.Context) error 
 		}
 	}
 
-	if s.config.EnableCloudArmor {
-		policy, err := s.createCloudArmorSecurityPolicy(ctx)
-		if err != nil {
-			return err
-		}
-		backendService.SecurityPolicy = policy.SelfLink
-	}
-
 	return nil
 }
 
-func (s *serverlessStack) createCloudRunNEG(ctx *pulumi.Context) (*compute.BackendService, *compute.UrlMap, error) {
+func (s *serverlessStack) createCloudRunNEG(ctx *pulumi.Context, policyURL pulumi.StringOutput) (*compute.UrlMap, error) {
 	serviceName := s.config.ServiceName
 	region := s.config.Region
 	project := s.config.Project
@@ -206,7 +208,7 @@ func (s *serverlessStack) createCloudRunNEG(ctx *pulumi.Context) (*compute.Backe
 		Role:        compute.SubnetworkRoleActive,
 	})
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 
 	neg, err := compute.NewRegionNetworkEndpointGroup(ctx, fmt.Sprintf("%s-default", serviceName), &compute.RegionNetworkEndpointGroupArgs{
@@ -219,7 +221,7 @@ func (s *serverlessStack) createCloudRunNEG(ctx *pulumi.Context) (*compute.Backe
 		},
 	})
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 
 	service, err := compute.NewBackendService(ctx, fmt.Sprintf("%s-default", serviceName), &compute.BackendServiceArgs{
@@ -231,10 +233,13 @@ func (s *serverlessStack) createCloudRunNEG(ctx *pulumi.Context) (*compute.Backe
 				Group: neg.SelfLink,
 			},
 		},
+		// TODO currently unable to set policyURL via SecurityPolicy
+		// See: https://github.com/pulumi/pulumi-google-native/issues/215
+
 		// TODO allow enabling IAP (Identity Aware Proxy)
 	})
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 
 	// TODO create compute address if enabled
@@ -243,7 +248,7 @@ func (s *serverlessStack) createCloudRunNEG(ctx *pulumi.Context) (*compute.Backe
 		Project:        pulumi.String(project),
 		DefaultService: service.SelfLink,
 	})
-	return service, defaultBackendUrlMap, err
+	return defaultBackendUrlMap, err
 }
 
 func (s *serverlessStack) createHTTPProxy(ctx *pulumi.Context, httpProxyUrlMap pulumi.StringOutput) error {
