@@ -382,6 +382,18 @@ func (s *serverlessStack) createCloudArmorSecurityPolicy(ctx *pulumi.Context) (*
 					SrcIpRanges: ipRanges,
 				},
 			},
+		}, &compute.SecurityPolicyRuleArgs{
+			Action:      pulumi.String("deny(403)"),
+			Description: pulumi.String("default ip fallback deny rule"),
+			Priority:    pulumi.Int(2),
+			Match: &compute.SecurityPolicyRuleMatcherArgs{
+				VersionedExpr: compute.SecurityPolicyRuleMatcherVersionedExprSrcIpsV1,
+				Config: &compute.SecurityPolicyRuleMatcherConfigArgs{
+					SrcIpRanges: pulumi.StringArray{
+						pulumi.String("*"),
+					},
+				},
+			},
 		})
 	}
 
